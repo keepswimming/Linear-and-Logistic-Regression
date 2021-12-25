@@ -1,0 +1,454 @@
+---
+title: "Homework 3 R markdown"
+author: "Rita Miller"
+#date: '`r Sys.Date()`'
+output:
+  html_document:
+    fig_height: 4
+    fig_width: 4.5
+  pdf_document:
+    fig_height: 4
+    fig_width: 4.5
+  word_document:
+    fig_height: 4
+    fig_width: 4.5
+---
+
+
+```{r, setup, include=FALSE}
+#Load packages here. 
+require(mosaic)   # Load additional packages here
+library(ISLR) # for College data
+library(dplyr)
+library(corrplot)
+library(RColorBrewer) # colors for correlation plot
+library(car) # for VIF
+library(readr)
+library(ggformula)
+library(leaps)
+library(FNN) # for comparison with KNN
+
+library(gpk) # for elephant data
+```
+# Some customization.  You can alter or delete as desired (if you know what you are doing).
+#trellis.par.set(theme=theme.mosaic()) # change default color scheme for lattice
+knitr::opts_chunk$set(
+  echo = TRUE,
+  tidy=FALSE,     # display code as typed
+  size="small")   # slightly smaller font for code
+```
+#### **Intellectual Property:**  
+These problems are the intellectual property of the instructors and may not be reproduced outside of this course.
+
+## Problem 1:  Linear Regression  
+
+In this problem, you will use multiple linear regression to model the incomes of people from Wisconsin.
+
+Data file (on Canvas): *Wisconsin_income.csv*  
+
+Data dictionary (on Canvas): *Wisconsin_income data dictionary.txt*
+
+Public Use Microdata from American Community Survey.  Accessed from http://www2.census.gov/programs-surveys/acs/data/pums/2014/1-Year/ on 27 July 2016.
+ 
+### Question 1 (2 points)
+Read in the data Wisconsin_income.csv.  Open the data dictionary in a text editor.  
+```{r}
+income = read.csv("Wisconsin_income.csv")
+#summary(income)
+#head(income)
+#view(income)
+#head(income)
+```
+Notice that the following 8 variables are categorical, but are coded as numbers:    
+
+* Citizenship  
+* Class of worker  
+* Language spoken at home  
+* Marital status  
+* Sex  
+* Disability  
+* Race  
+* Hispanic  
+
+Tell R to treat them as factors.  Enter your R code below.
+
+**Code Answer**: 
+```{r}
+income$CIT2 = as.factor(income$CIT2) #Citizenship  
+income$COW = as.factor(income$COW) #Class of worker 
+income$LANX = as.factor(income$LANX) #Language spoken at home
+income$MAR = as.factor(income$MAR) #Marital status
+income$SEX = as.factor(income$SEX) # Sex 
+income$DIS = as.factor(income$DIS) #Disability 
+income$RAC = as.factor(income$RAC) # Race  
+income$Hispanic = as.factor(income$Hispanic) #Hispanic
+```
+#OR
+```{r}
+income <- income %>% 
+  mutate(CIT2 = factor(CIT2), 
+         COW = factor(COW), 
+         LANX = factor(LANX), 
+         MAR = factor(MAR), 
+         SEX = factor(SEX), 
+         DIS = factor(DIS), 
+         RAC = factor(RAC), 
+         Hispanic = factor(Hispanic)) 
+```
+### Question 2 (2 points)
+Make histograms of people’s total earnings, usual hours worked per week, and travel time to work.  Which of these 3 variables are likely to benefit from log-transformation?  Apply the transformation if appropriate, and enter your R code below.
+
+**Code Answer**: 
+
+```{r}
+income <- income %>% 
+  mutate(log_earn = log(PERNP), 
+         log_travel = log(JWMNP)) %>% 
+  select(-c(PERNP, JWMNP)) 
+```
+
+#Which of these 3 variables are likely to benefit from log-transformation?: PERNP and JWMNP
+#both Total person's earnings (PERNP) and travel times (JWMNP) appear right-skewed, so we should log-transform them.
+
+### Question 3 (2 points)
+Use *regsubsets()* to perform best subset selection for a linear model for total earnings as a function of all other variables in the data set.  
+If you log-transformed any variables in the previous question, use the **transformed** variables,  *not*  the original variables, here.  Consider *all* models with up to 39 variables.  Make a plot summarizing which variables are included in the best model of each size.  Enter your R code below.
+
+**Code Answer**: 
+```{r}
+library(leaps)
+#fit the best subsets regression. 
+regfit.full = regsubsets(logPERNP~.-PERNP-JWMNP,data = income, nvmax = 39)
+
+#plot to find the variables that provide the lowest BIC
+plot(regfit.full)
+```
+
+### Question 4 (3 points)
+Plot adjusted $R^2$ as a function of number of variables.  
+
+Find the number of variables in the best model, as measured by adjusted $R^2$.  Enter your R code below.
+
+**Code Answer**: 
+```{r}
+# Question 4
+#plotting all subsets using the adj. r2 measure
+plot(regfit.full, scale = "adjr2")
+
+#put the all subsets into a summary object
+regfit.summary = summary(regfit.full)
+
+#pull the model with the max adjr2 #answer is 15
+which.max(regfit.summary$adjr2)
+
+#check the coefficients on model 36 
+#coef(regfit.full, 15)
+
+#pull the model with the min BIC #18
+which.min(regfit.summary$bic)
+
+#check the coefficients on model 19 # 19 models according to the BIC
+coef(regfit.full, 19)
+```
+
+```{r}
+#Question 5
+#How many variables (not counting the intercept) are in the best model, as measured by #adjusted R2?
+which.min(regfit.summary$bic)
+```
+
+Question 6
+How many variables (not counting the intercept) are in the best model, as measured by BIC? 18
+
+### Question 7 (4 points)
+Set the random seed equal to 3.
+
+Perform 10-fold cross-validation to choose the best size of model (from 1 to 39 variables) based on cross-validation MSE.  Record the mean squared error within each fold for each size of variable.  **Note**: This step will probably take a few minutes to run!  
+Enter your R code below.
+
+**Code Answer**: 
+```{r}
+# Define a predict() function for regsubsets objects
+predict.regsubsets <- function(object, alldata, subset, id, ...){
+ form = as.formula(object$call[[2]])
+ mat = model.matrix(form, alldata)
+ mat = mat[subset, ]
+
+ if(sum(subset) == 1 | length(subset) == 1){
+ # For LOOCV, convert mat to a matrix
+ mat = t(as.matrix(mat))
+ }
+
+ coefi = coef(object, id=id)
+ xvars = names(coefi)
+ mat[ , xvars] %*% coefi
+} # end function predict.regsubsets
+
+n = dim(income)[1]
+ngroups = 10
+groups = rep(1:ngroups, length = n)
+set.seed(3)
+cvgroups = sample(groups, n)
+nvar = 39
+group_error = matrix(NA, nr = ngroups, nc = nvar)
+ # row = fold,
+ # column = model size (number of variables)
+for(ii in 1:ngroups){ # iterate over folds
+ groupii = (cvgroups == ii)
+ train_data = income[!groupii, ]
+ test_data = income[groupii, ]
+
+
+ cv_fit = regsubsets(log_earn ~ .,
+ data = train_data, nvmax = nvar)
+
+ for(jj in 1:nvar){ # iterate over model size
+
+ y_pred = predict(cv_fit, alldata = income,
+ subset = groupii, id = jj)
+ # Normally, we'd store this:
+ # all_predicted[groupii, jj] = y_pred
+
+ MSE = mean((test_data$log_earn - y_pred)^2)
+ group_error[ii, jj] = MSE
+
+
+ } # end iteration over model size
+} # end iterat
+
+```
+# Question 8
+### Question 8 (1 points)
+#Find the mean of the MSEs from all the folds with the same number of variables.  Which number #of variables gives the lowest cross-validation MSE?
+```{r}
+#now that we have all the CV errors calculated for each of the 10 folds for all 39 models, we can average them up.
+#apply the mean function to each row (i.e. "1") of the group.error matrix
+MSE = apply(group_error,1,mean)
+
+#plot this resulting vector to visualize the low point
+plot(MSE)
+
+#or, just find the index of the row with the lowest MSE. That is our resulting model for selection. 
+which.min(MSE) #37
+```
+**Numeric Answer**   (AUTOGRADED on Canvas): 
+#answer is 37
+
+### Question 9 (2 points)
+Estimate the standard error of the cross-validation errors and find the most parsimonious model with a CV error within 1 standard error of the lowest.  How many predictor variables are in the most parsimonious model with a CV error within 1 standard error of the lowest?
+
+**Numeric Answer**   (AUTOGRADED on Canvas): 5
+
+```{r}
+std_err = apply(group_error, 2, sd)/sqrt(ngroups)
+std_err[low_MSE_model]
+which(MSE_overall <= MSE_overall[low_MSE_model] +
+ std_err[low_MSE_model])
+
+```
+### Question 10 (4 points)
+Use `regsubsets` to find the best model for the whole data set which has the number of variables you found in the previous question.  For each variable included in the model, write a sentence giving a possible explanation for the direction of the association.  Refer to variables in plain English. 
+
+**Note**: It may be helpful to refer to the data dictionary and/or a map of Wisconsin, such as https://en.wikipedia.org/wiki/Wisconsin#/media/File:Wisconsin-counties-map.gif.  
+
+**Example**:  "Being in a union is positively associated with earnings.  This suggests that unions' collective bargaining tends to be successful in convincing employers to offer higher wages."
+
+**Text Answer**: 
+For each variable included in the model, write a sentence giving a possible explanation for the direction of the association. "Never marry women who are self employed?" That suggests a mercenary approach to relationships...
+
+## Problem 2:  Logistic Regression  
+
+In this problem, you will use logistic regression to predict whether a car has low or high gas mileage.
+
+### Question 11 (2 points)
+Write R code to:  
+
+* Load the **Auto** data set into R.  The data set is in the ISLR library.  
+* **Tell R to treat the `origin` variable as a factor.**
+* Create a binary variable that equals "high" for cars with gas mileage (`mpg`) greater than or equal to the median and "low" for cars with gas mileage below the median.  Tell R to treat it as a factor.  
+
+Enter your R code below.
+
+**Code Answer**: 
+```{r}
+data(Auto)
+#Tell R to treat the `origin` variable as a factor
+mpg_cutoff = median(Auto$mpg)
+Auto <- Auto %>%
+ mutate(origin = factor(origin),
+ mpg_bin = factor(ifelse(mpg >= mpg_cutoff, "high", "low")))
+```
+```{r}
+plot(Auto)
+```
+
+### Question 12 (2 points)
+Make a correlation plot of the numeric variables in **Auto**.  Use **Insert** -> **Image** to upload your graph to this question on Canvas.
+
+**Graph Answer**:
+```{r}
+#Make a correlation plot of the numeric variables in **Auto**
+
+# Take only the numeric variables
+auto_numeric = select_if(Auto, is.numeric)
+
+# Compute correlation matrix
+correlations <- cor(auto_numeric, 
+                    use = "pairwise.complete.obs")
+
+# Make the correlation plot
+corrplot(correlations, 
+         type = "upper", order = "hclust", 
+         col = rev(brewer.pal(n = 8, name = "RdYlBu")))
+
+```
+### Question 13 (2 points)
+We plan to use logistic regression to predict the binary gas mileage variable.  Do you have any concerns about collinearity?  If so, select all of the pairs of variables in the following list that cause you concern.  (You may have concerns about some variables that are not on this list.  That's fine; just answer based on the variables listed here.)
+
+**Multiple-Select Answer** (AUTOGRADED on Canvas): One or more of
+```{r}
+pairs(Auto)#1/2
+```
+- weight and horsepower - yes
+- mpg and cylinders - yes
+- weight and weight
+- horsepower and displacement - yes
+- acceleration and year- 
+- None of these pairs cause me concern.
+
+(The answer options on Canvas may appear in a different order.)
+
+#response
+Yes I see issues with collinearity among some variables. Most of the variables
+regarding a car's engine appear to be correlated, for instance mpg, cylinders, 
+displacement, horsepower, weight, and acceleration. Even the year seems correlated with the mpg, which could make sense since, mpg could improve with technology.
+
+### Question 14 (1 point)
+Perform logistic regression of the binary gas mileage variable on the other variables in **Auto** (excluding `name` and the untransformed `mpg`).  Enter your R code below.
+
+**Code Answer**: 
+```{r}
+fit = glm(highMPG~.-mpg-name,data = Auto, family = "binomial")
+```
+
+### Question 15 (1 point)
+Compute the variance inflation factor (VIF) for each of the predictor variables in the model.  Which variable(s) have VIFs greater than or equal to 10?
+
+**Note**:  If none of the variables have VIFs greater than or equal to 10, double-check your work in question 11.
+
+```{r}
+ #load the car package
+library(car) # for VIF
+ #Compute the VIF for each predictor variables in the model.
+vif(fit)
+```
+
+**Multiple-Select Answer** (AUTOGRADED on Canvas): One or more of
+
+- cylinders  
+- displacement - this one (11.604209)
+- horsepower 
+- weight
+
+(The answer options on Canvas may appear in a different order.)
+
+### Question 16 (4 points)
+Remove any variables with VIFs greater than or equal to 10.  Set the random seed equal to 3 and perform 10-fold cross-validation.  In each phase of the cross-validation, fit the logistic model (excluding name, continuous mpg, and the variable(s) you found in the previous question) and predict the probability of high gas mileage for each data point in the validation set.  Store all of the probabilities in a single vector.  
+
+**Note**:  Depending on how you set up the formula in the logistic regression, the predict function may give an error, “Factor name has new levels.”  This is complaining about the fact that there are models of car in the validation set that weren’t included in the training data.  But, it’s not really a problem, because we’re not using name as a predictor variable.  You can create a new data frame that excludes name, or you can update the levels of the name factor in the logistic model, as shown [here](http://stackoverflow.com/questions/22315394/factor-has-new-levels-error-for-variable-im-not-using).
+
+Enter your R code below.
+
+**Code Answer**: 
+
+### Question 17 (2 points)
+Create a ROC curve for this model.  What is its AUC?  Enter your answer to 4 decimal places.
+
+**Numeric Answer**   (AUTOGRADED on Canvas):  
+
+#calculating the AUC. 
+#auc(myroc) #AUC is 0.9702
+#plot(myroc)#this is only half of the data, must show both
+
+```{r}
+## Comparing logistic regression and KNN
+results = read.csv("Homework_3_KNN.csv")
+```
+```{r}
+n = dim(Auto)[1]
+ngroups = 10 # using 10-fold cross-validation
+groups = rep(1:ngroups, length = n)
+set.seed(3)
+cvgroups = sample(groups, n)
+all_predicted = numeric(length = n)
+for(ii in 1:ngroups){
+ groupii = (cvgroups == ii)
+ train_set = Auto[!groupii, ]
+ test_set = Auto[groupii, ]
+
+ model_fit = glm(mpg_bin ~ . - mpg - name,
+ data = train_set, family="binomial")
+ model_fit$xlevels[["name"]] <- levels(Auto$name)
+
+ predicted = predict(model_fit, newdata = test_set,
+ type="response")
+ all_predicted[groupii] = predicted
+}
+```
+## Setting levels: control = high, case = low
+## Setting direction: controls < cases
+
+```{r}
+my_roc = roc(response=Default$default, predictor=all_predicted)
+
+my_roc2 = roc(response=Default$default, predictor=all_predicted2)
+
+plot.roc(my_roc)
+
+plot.roc(my_roc2, add=T, col="red", lty=2)
+legend("bottomright", legend=c("Student + Balance", "Student +
+Income"),lty=c(1,2), col=c("black","red"))
+
+auc(my_roc)
+auc(my_roc2)
+```
+```
+```{r}
+### Make the ROC curves
+my_roc = roc(response = results$specificities, predictor = all_predicted)
+my_roc_knn = roc(response = results$sensitivities, predictor = all_predicted_knn)
+
+# Collect key values into a data frame:
+results = data.frame(sensitivity = c(my_roc$sensitivities, my_roc_knn$sensitivities), 
+                     specificity = c(my_roc$specificities, my_roc_knn$specificities))
+
+
+# Add a column to specify the model.  While we're at it, compute the false positive rate:
+results <- results %>%
+  mutate(model = c(rep("Logistic", length(my_roc$thresholds)), rep("KNN", length(my_roc_knn$thresholds))),
+         false_positive_rate = 1 - specificity)
+```
+```{r}
+
+# Make the graph:
+results %>%
+  gf_line(sensitivity ~ false_positive_rate, color =~ model) %>%
+  gf_abline(slope = 1, intercept = 0, col = "gray")
+```
+
+
+### Question 18 (2 points)
+The file `Homework_3_KNN.csv` (available on Homework 3 on Canvas) contains the data needed to construct a ROC curve for a KNN model of binary gas mileage, using 49 nearest neighbors.  
+
+Make a graph showing the ROC curve of the logistic regression and KNN models.  
+
+Use **Insert** -> **Image** to upload your graph on Canvas.
+
+**Graph Answer**:  
+
+
+### Question 19 (1 point)
+Write 1-2 sentences comparing the logistic regression and KNN models based on their ROC curves.  
+
+**Text Answer**
+#The model has a good amount of area under the curve, thus performing much better than "random guessing". The curve jumps up sharply right away in sensitivity (or its ability to predict true positives), for a slight trade-off in 1-specificity (or the false positive rate). Overall, the model does a good job at predicting when cars have a high or low mpg, and at the same time not causing too many errors on false positives.
